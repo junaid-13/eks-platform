@@ -358,29 +358,29 @@ fi
 if command_exists docker; then
     log_success "Docker is already installed: $(docker --version)"
 else
-    log_info "Installing Docker Engine..."
+    log_info "Installing Docker..."
 
     # -------------------------------------------------------------------------
-    # Detect Ubuntu
+    # Verify Ubuntu
     # -------------------------------------------------------------------------
 
     if [[ ! -f /etc/os-release ]]; then
-        log_error "/etc/os-release not found. Cannot determine operating system."
+        log_error "Unable to determine operating system."
         exit 1
     fi
 
     . /etc/os-release
 
-    if [[ "${ID}" != "ubuntu" ]]; then
-        log_error "This Docker installation section supports Ubuntu only."
-        log_error "Detected OS: ${ID}"
+    if [[ "$ID" != "ubuntu" ]]; then
+        log_error "This Docker installation supports Ubuntu only."
+        log_error "Detected OS: $ID"
         exit 1
     fi
 
-    UBUNTU_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+    UBUNTU_CODENAME="${UBUNTU_CODENAME:-$VERSION_CODENAME}"
 
     if [[ -z "$UBUNTU_CODENAME" ]]; then
-        log_error "Could not determine Ubuntu codename."
+        log_error "Unable to determine Ubuntu codename."
         exit 1
     fi
 
@@ -388,10 +388,7 @@ else
     log_info "Architecture: $ARCH"
 
     # -------------------------------------------------------------------------
-    # Remove conflicting Docker/container packages
-    #
-    # Docker officially recommends removing these packages before installing
-    # Docker Engine from its own repository.
+    # Remove conflicting Ubuntu Docker packages
     # -------------------------------------------------------------------------
 
     CONFLICTING_PACKAGES=(
@@ -405,57 +402,50 @@ else
         runc
     )
 
-    PACKAGES_TO_REMOVE=()
+    INSTALLED_CONFLICTS=()
 
     for package in "${CONFLICTING_PACKAGES[@]}"; do
         if dpkg-query -W -f='${Status}' "$package" 2>/dev/null \
             | grep -q "install ok installed"; then
-
-            PACKAGES_TO_REMOVE+=("$package")
+            INSTALLED_CONFLICTS+=("$package")
         fi
     done
 
-    if [[ "${#PACKAGES_TO_REMOVE[@]}" -gt 0 ]]; then
-        log_info "Conflicting Docker/container packages detected:"
-        printf '  - %s\n' "${PACKAGES_TO_REMOVE[@]}"
+    if [[ ${#INSTALLED_CONFLICTS[@]} -gt 0 ]]; then
+        log_info "Removing conflicting Docker packages..."
 
-        log_info "Removing conflicting packages..."
+        printf '  - %s\n' "${INSTALLED_CONFLICTS[@]}"
 
-        if ! apt-get remove -y "${PACKAGES_TO_REMOVE[@]}"; then
-            log_error "Failed to remove conflicting Docker/container packages."
+        if ! apt-get remove -y "${INSTALLED_CONFLICTS[@]}"; then
+            log_error "Failed to remove conflicting Docker packages."
             exit 1
         fi
     else
-        log_success "No conflicting Docker/container packages found."
+        log_success "No conflicting Docker packages found."
     fi
 
     # -------------------------------------------------------------------------
-    # Install Docker repository prerequisites
+    # Docker prerequisites
     # -------------------------------------------------------------------------
 
-    DOCKER_PREREQUISITES=(
-        ca-certificates
-        curl
-    )
-
-    for package in "${DOCKER_PREREQUISITES[@]}"; do
+    for package in ca-certificates curl; do
         if dpkg -s "$package" >/dev/null 2>&1; then
             log_success "$package is already installed."
         else
-            log_info "Installing Docker prerequisite: $package"
+            log_info "Installing $package..."
 
             if ! apt-get install -y "$package"; then
-                log_error "Failed to install Docker prerequisite: $package"
+                log_error "Failed to install $package."
                 exit 1
             fi
         fi
     done
 
     # -------------------------------------------------------------------------
-    # Add Docker official GPG key
+    # Docker GPG key
     # -------------------------------------------------------------------------
 
-    log_info "Configuring Docker GPG key..."
+    log_info "Installing Docker GPG key..."
 
     install -m 0755 -d /etc/apt/keyrings
 
@@ -470,7 +460,7 @@ else
     chmod a+r /etc/apt/keyrings/docker.asc
 
     # -------------------------------------------------------------------------
-    # Configure Docker official APT repository
+    # Docker APT repository
     # -------------------------------------------------------------------------
 
     log_info "Configuring Docker APT repository..."
@@ -491,15 +481,25 @@ EOF
     log_info "Updating APT package index..."
 
     if ! apt-get update; then
-        log_error "Failed to update APT package index after adding Docker repository."
+        log_error "Failed to update APT package index."
         exit 1
     fi
 
     # -------------------------------------------------------------------------
-    # Verify Docker packages are available
+    # Check Docker CE availability
     # -------------------------------------------------------------------------
 
-    log_info "Checking Docker packages..."
+    if ! apt-cache policy docker-ce | grep -q "Candidate:"; then
+        log_error "docker-ce is not available from Docker's official repository."
+        log_error "Ubuntu codename: $UBUNTU_CODENAME"
+        exit 1
+    fi
+
+    # -------------------------------------------------------------------------
+    # Install Docker Engine
+    # -------------------------------------------------------------------------
+
+    log_info "Installing Docker Engine..."
 
     DOCKER_PACKAGES=(
         docker-ce
@@ -509,33 +509,8 @@ EOF
         docker-compose-plugin
     )
 
-    for package in "${DOCKER_PACKAGES[@]}"; do
-        if ! apt-cache policy "$package" | grep -q "Candidate:"; then
-            log_error "Docker package '$package' is not available."
-            log_error "Ubuntu: $UBUNTU_CODENAME"
-            log_error "Architecture: $ARCH"
-            exit 1
-        fi
-    done
-
-    # -------------------------------------------------------------------------
-    # Install Docker Engine
-    # -------------------------------------------------------------------------
-
-    log_info "Installing Docker Engine..."
-
-    if ! apt-get install -y \
-        docker-ce \
-        docker-ce-cli \
-        containerd.io \
-        docker-buildx-plugin \
-        docker-compose-plugin; then
-
+    if ! apt-get install -y "${DOCKER_PACKAGES[@]}"; then
         log_error "Docker installation failed."
-        log_error "Run the following command to inspect the dependency problem:"
-        echo
-        echo "    apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-        echo
         exit 1
     fi
 
@@ -554,7 +529,6 @@ EOF
 
     if ! systemctl start docker; then
         log_error "Failed to start Docker service."
-        log_error "Docker service status:"
         systemctl status docker --no-pager || true
         exit 1
     fi
@@ -564,12 +538,7 @@ EOF
     # -------------------------------------------------------------------------
 
     if ! command_exists docker; then
-        log_error "Docker was installed but the docker command was not found."
-        exit 1
-    fi
-
-    if ! docker --version; then
-        log_error "Docker command exists but could not be executed."
+        log_error "Docker command was not found after installation."
         exit 1
     fi
 
@@ -580,12 +549,15 @@ EOF
     fi
 
     log_success "Docker installed successfully: $(docker --version)"
-    log_success "Docker service is running."
+
+    # -------------------------------------------------------------------------
+    # Verify Docker Compose plugin
+    # -------------------------------------------------------------------------
 
     if docker compose version >/dev/null 2>&1; then
         log_success "Docker Compose installed: $(docker compose version)"
     else
-        log_error "Docker Compose plugin was not installed correctly."
+        log_error "Docker Compose plugin is not working."
         exit 1
     fi
 fi
