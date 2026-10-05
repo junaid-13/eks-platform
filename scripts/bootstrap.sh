@@ -358,22 +358,234 @@ fi
 if command_exists docker; then
     log_success "Docker is already installed: $(docker --version)"
 else
-    log_info "Installing Docker..."
+    log_info "Installing Docker Engine..."
 
-    if ! apt-get install -y docker.io; then
-        log_error "Docker installation failed."
+    # -------------------------------------------------------------------------
+    # Detect Ubuntu
+    # -------------------------------------------------------------------------
+
+    if [[ ! -f /etc/os-release ]]; then
+        log_error "/etc/os-release not found. Cannot determine operating system."
         exit 1
     fi
 
-    if ! systemctl enable --now docker; then
-        log_error "Docker was installed but the Docker service could not be started."
+    . /etc/os-release
+
+    if [[ "${ID}" != "ubuntu" ]]; then
+        log_error "This Docker installation section supports Ubuntu only."
+        log_error "Detected OS: ${ID}"
         exit 1
     fi
 
-    if command_exists docker; then
-        log_success "Docker installed successfully: $(docker --version)"
+    UBUNTU_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+
+    if [[ -z "$UBUNTU_CODENAME" ]]; then
+        log_error "Could not determine Ubuntu codename."
+        exit 1
+    fi
+
+    log_info "Ubuntu codename: $UBUNTU_CODENAME"
+    log_info "Architecture: $ARCH"
+
+    # -------------------------------------------------------------------------
+    # Remove conflicting Docker/container packages
+    #
+    # Docker officially recommends removing these packages before installing
+    # Docker Engine from its own repository.
+    # -------------------------------------------------------------------------
+
+    CONFLICTING_PACKAGES=(
+        docker.io
+        docker-compose
+        docker-compose-v2
+        docker-doc
+        docker-buildx
+        podman-docker
+        containerd
+        runc
+    )
+
+    PACKAGES_TO_REMOVE=()
+
+    for package in "${CONFLICTING_PACKAGES[@]}"; do
+        if dpkg-query -W -f='${Status}' "$package" 2>/dev/null \
+            | grep -q "install ok installed"; then
+
+            PACKAGES_TO_REMOVE+=("$package")
+        fi
+    done
+
+    if [[ "${#PACKAGES_TO_REMOVE[@]}" -gt 0 ]]; then
+        log_info "Conflicting Docker/container packages detected:"
+        printf '  - %s\n' "${PACKAGES_TO_REMOVE[@]}"
+
+        log_info "Removing conflicting packages..."
+
+        if ! apt-get remove -y "${PACKAGES_TO_REMOVE[@]}"; then
+            log_error "Failed to remove conflicting Docker/container packages."
+            exit 1
+        fi
     else
-        log_error "Docker installation completed but docker command was not found."
+        log_success "No conflicting Docker/container packages found."
+    fi
+
+    # -------------------------------------------------------------------------
+    # Install Docker repository prerequisites
+    # -------------------------------------------------------------------------
+
+    DOCKER_PREREQUISITES=(
+        ca-certificates
+        curl
+    )
+
+    for package in "${DOCKER_PREREQUISITES[@]}"; do
+        if dpkg -s "$package" >/dev/null 2>&1; then
+            log_success "$package is already installed."
+        else
+            log_info "Installing Docker prerequisite: $package"
+
+            if ! apt-get install -y "$package"; then
+                log_error "Failed to install Docker prerequisite: $package"
+                exit 1
+            fi
+        fi
+    done
+
+    # -------------------------------------------------------------------------
+    # Add Docker official GPG key
+    # -------------------------------------------------------------------------
+
+    log_info "Configuring Docker GPG key..."
+
+    install -m 0755 -d /etc/apt/keyrings
+
+    if ! curl -fsSL \
+        https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc; then
+
+        log_error "Failed to download Docker GPG key."
+        exit 1
+    fi
+
+    chmod a+r /etc/apt/keyrings/docker.asc
+
+    # -------------------------------------------------------------------------
+    # Configure Docker official APT repository
+    # -------------------------------------------------------------------------
+
+    log_info "Configuring Docker APT repository..."
+
+    cat > /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: ${UBUNTU_CODENAME}
+Components: stable
+Architectures: ${ARCH}
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+    # -------------------------------------------------------------------------
+    # Update package index
+    # -------------------------------------------------------------------------
+
+    log_info "Updating APT package index..."
+
+    if ! apt-get update; then
+        log_error "Failed to update APT package index after adding Docker repository."
+        exit 1
+    fi
+
+    # -------------------------------------------------------------------------
+    # Verify Docker packages are available
+    # -------------------------------------------------------------------------
+
+    log_info "Checking Docker packages..."
+
+    DOCKER_PACKAGES=(
+        docker-ce
+        docker-ce-cli
+        containerd.io
+        docker-buildx-plugin
+        docker-compose-plugin
+    )
+
+    for package in "${DOCKER_PACKAGES[@]}"; do
+        if ! apt-cache policy "$package" | grep -q "Candidate:"; then
+            log_error "Docker package '$package' is not available."
+            log_error "Ubuntu: $UBUNTU_CODENAME"
+            log_error "Architecture: $ARCH"
+            exit 1
+        fi
+    done
+
+    # -------------------------------------------------------------------------
+    # Install Docker Engine
+    # -------------------------------------------------------------------------
+
+    log_info "Installing Docker Engine..."
+
+    if ! apt-get install -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin; then
+
+        log_error "Docker installation failed."
+        log_error "Run the following command to inspect the dependency problem:"
+        echo
+        echo "    apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+        echo
+        exit 1
+    fi
+
+    # -------------------------------------------------------------------------
+    # Enable and start Docker
+    # -------------------------------------------------------------------------
+
+    log_info "Enabling Docker service..."
+
+    if ! systemctl enable docker; then
+        log_error "Failed to enable Docker service."
+        exit 1
+    fi
+
+    log_info "Starting Docker service..."
+
+    if ! systemctl start docker; then
+        log_error "Failed to start Docker service."
+        log_error "Docker service status:"
+        systemctl status docker --no-pager || true
+        exit 1
+    fi
+
+    # -------------------------------------------------------------------------
+    # Verify Docker
+    # -------------------------------------------------------------------------
+
+    if ! command_exists docker; then
+        log_error "Docker was installed but the docker command was not found."
+        exit 1
+    fi
+
+    if ! docker --version; then
+        log_error "Docker command exists but could not be executed."
+        exit 1
+    fi
+
+    if ! systemctl is-active --quiet docker; then
+        log_error "Docker service is not running."
+        systemctl status docker --no-pager || true
+        exit 1
+    fi
+
+    log_success "Docker installed successfully: $(docker --version)"
+    log_success "Docker service is running."
+
+    if docker compose version >/dev/null 2>&1; then
+        log_success "Docker Compose installed: $(docker compose version)"
+    else
+        log_error "Docker Compose plugin was not installed correctly."
         exit 1
     fi
 fi
