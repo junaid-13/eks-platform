@@ -221,17 +221,7 @@ fi
 if command_exists kustomize; then
     log_success "Kustomize is already installed: $(kustomize version --short 2>/dev/null)"
 else
-    log_info "Installing Kustomize..."
-
-    KUSTOMIZE_VERSION="$(curl -fsSL https://api.github.com/repos/kubernetes-sigs/kustomize/releases/latest \
-        | grep '"tag_name":' \
-        | head -n 1 \
-        | cut -d '"' -f 4)"
-
-    if [[ -z "$KUSTOMIZE_VERSION" ]]; then
-        log_error "Could not determine the latest Kustomize version."
-        exit 1
-    fi
+    log_info "Installing Kustomize as a binary..."
 
     KUSTOMIZE_ARCH="amd64"
 
@@ -239,34 +229,79 @@ else
         KUSTOMIZE_ARCH="arm64"
     fi
 
-    KUSTOMIZE_URL="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_${KUSTOMIZE_ARCH}.tar.gz"
+    # Get the latest Kustomize release tag
+    KUSTOMIZE_VERSION="$(
+        curl -fsSL https://api.github.com/repos/kubernetes-sigs/kustomize/releases/latest \
+        | grep '"tag_name":' \
+        | head -n 1 \
+        | cut -d '"' -f 4
+    )"
+
+    if [[ -z "$KUSTOMIZE_VERSION" ]]; then
+        log_error "Could not determine the latest Kustomize version."
+        exit 1
+    fi
+
+    log_info "Latest Kustomize version: $KUSTOMIZE_VERSION"
+
+    # Kustomize release asset format:
+    # kustomize_vX.Y.Z_linux_amd64.tar.gz
+    #
+    # Example:
+    # kustomize_v5.7.1_linux_amd64.tar.gz
+    KUSTOMIZE_VERSION_NUMBER="${KUSTOMIZE_VERSION#kustomize/}"
+
+    KUSTOMIZE_FILE="kustomize_${KUSTOMIZE_VERSION_NUMBER}_linux_${KUSTOMIZE_ARCH}.tar.gz"
+
+    KUSTOMIZE_URL="https://github.com/kubernetes-sigs/kustomize/releases/download/${KUSTOMIZE_VERSION}/${KUSTOMIZE_FILE}"
+
+    log_info "Downloading Kustomize from:"
+    echo "$KUSTOMIZE_URL"
 
     TMP_DIR="$(mktemp -d)"
 
-    if ! curl -fL "$KUSTOMIZE_URL" -o "$TMP_DIR/kustomize.tar.gz"; then
-        log_error "Failed to download Kustomize."
+    cleanup_kustomize() {
         rm -rf "$TMP_DIR"
+    }
+
+    trap cleanup_kustomize EXIT
+
+    if ! curl -fL \
+        --retry 3 \
+        --retry-delay 2 \
+        "$KUSTOMIZE_URL" \
+        -o "$TMP_DIR/kustomize.tar.gz"; then
+
+        log_error "Failed to download Kustomize."
+        log_error "URL: $KUSTOMIZE_URL"
         exit 1
     fi
+
+    log_info "Extracting Kustomize..."
 
     if ! tar -xzf "$TMP_DIR/kustomize.tar.gz" -C "$TMP_DIR"; then
-        log_error "Failed to extract Kustomize."
-        rm -rf "$TMP_DIR"
+        log_error "Failed to extract Kustomize archive."
         exit 1
     fi
+
+    if [[ ! -f "$TMP_DIR/kustomize" ]]; then
+        log_error "Kustomize binary was not found inside the downloaded archive."
+        exit 1
+    fi
+
+    log_info "Installing Kustomize binary to /usr/local/bin..."
 
     if ! install -m 0755 "$TMP_DIR/kustomize" /usr/local/bin/kustomize; then
-        log_error "Failed to install Kustomize."
-        rm -rf "$TMP_DIR"
+        log_error "Failed to install Kustomize binary."
         exit 1
     fi
-
-    rm -rf "$TMP_DIR"
 
     if command_exists kustomize; then
         log_success "Kustomize installed successfully."
+        log_success "Version: $(kustomize version --short 2>/dev/null)"
+        log_success "Binary: $(command -v kustomize)"
     else
-        log_error "Kustomize installation completed but command was not found."
+        log_error "Kustomize installation completed but kustomize command was not found."
         exit 1
     fi
 fi
