@@ -153,13 +153,10 @@ if command_exists helm; then
 else
     log_info "Installing Helm..."
 
-    curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey \
-        | gpg --dearmor -o /usr/share/keyrings/helm.gpg
-
-    chmod 644 /usr/share/keyrings/helm.gpg
-
-    echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main" \
-        > /etc/apt/sources.list.d/helm-stable-debian.list
+    curl -fsSL https://baltocdn.com/helm/signing.asc |
+        gpg --dearmor -o /usr/share/keyrings/helm.gpg
+    echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" |
+        tee /etc/apt/sources.list.d/helm-stable-debian.list
 
     if ! apt-get update; then
         log_error "Failed to update apt after adding Helm repository."
