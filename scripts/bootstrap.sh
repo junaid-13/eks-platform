@@ -90,6 +90,7 @@ fi
 PREREQUISITES=(
     curl
     wget
+    unzip
     gnupg
     ca-certificates
     lsb-release
@@ -560,6 +561,51 @@ EOF
 fi
 
 # -----------------------------------------------------------------------------
+# AWS CLI
+# -----------------------------------------------------------------------------
+
+if command_exists aws; then
+    log_success "AWS CLI is already installed: $(aws --version)"
+else
+    log_info "Installing AWS CLI..."
+
+    (
+        TMP_DIR="$(mktemp -d)"
+        function cleanup {
+            rm -rf "$TMP_DIR"
+        }
+        trap cleanup EXIT
+
+        # Download the AWS CLI v2 installer
+        if ! curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o "$TMP_DIR/awscliv2.zip"; then
+            log_error "Failed to download AWS CLI installer."
+            exit 1
+        fi
+
+        # Unzip the installer
+        if ! unzip -q "$TMP_DIR/awscliv2.zip" -d "$TMP_DIR"; then
+            log_error "Failed to unzip AWS CLI installer."
+            exit 1
+        fi
+
+        # Run the installer
+        if ! "$TMP_DIR/aws/install"; then
+            log_error "Failed to run AWS CLI installer."
+            exit 1
+        fi
+    )
+
+    # Verify installation
+    if command_exists aws; then
+        log_success "AWS CLI installed successfully."
+        log_success "Version: $(aws --version)"
+    else
+        log_error "AWS CLI installation completed but aws command was not found."
+        exit 1
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # Final verification
 # -----------------------------------------------------------------------------
 
@@ -575,6 +621,7 @@ TOOLS=(
     kustomize
     argocd
     docker
+    aws
 )
 
 FAILED=0
